@@ -51,13 +51,28 @@ def stream_completion(
     start = time.time()
     is_thinking = True
     last_reasoning_tokens = 0
+    accumulated_reasoning = ""
+    last_tool_usage: dict[str, int] = {}
 
     try:
         for response, chunk in chat.stream():
             ts = now_iso()
 
-            reasoning_tokens = getattr(response.usage, "reasoning_tokens", 0) or 0
+            # reasoning_content — 思考テキストの断片
+            rc = chunk.reasoning_content if hasattr(chunk, "reasoning_content") else ""
+            if rc:
+                accumulated_reasoning += rc
+                event = StreamEvent(
+                    timestamp=ts,
+                    event_type="reasoning_delta",
+                    data={"reasoning_content": rc},
+                )
+                result.events.append(event)
+                if on_event:
+                    on_event(event, result.final_answer)
 
+            # reasoning_tokens カウント（verbose_streaming）
+            reasoning_tokens = getattr(response.usage, "reasoning_tokens", 0) or 0
             if reasoning_tokens and reasoning_tokens != last_reasoning_tokens and is_thinking:
                 last_reasoning_tokens = reasoning_tokens
                 event = StreamEvent(
@@ -69,13 +84,73 @@ def stream_completion(
                 if on_event:
                     on_event(event, result.final_answer)
 
+            # server_side_tool_usage — ツール使用の変化を検出
+            tool_usage: dict[str, int] = {}
+            try:
+                tool_usage = dict(chunk.server_side_tool_usage) if hasattr(chunk, "server_side_tool_usage") else {}
+            except Exception:
+                pass
+            if tool_usage and tool_usage != last_tool_usage:
+                last_tool_usage = tool_usage
+                event = StreamEvent(
+                    timestamp=ts,
+                    event_type="tool_usage",
+                    data={"tools": tool_usage},
+                )
+                result.events.append(event)
+                if on_event:
+                    on_event(event, result.final_answer)
+
+            # tool_calls — 明示的なツール呼び出し
+            try:
+                tcs = chunk.tool_calls if hasattr(chunk, "tool_calls") else []
+                for tc in tcs:
+                    tc_data: dict = {}
+                    try:
+                        tc_data = {
+                            "id": getattr(tc, "id", "unknown"),
+                            "name": getattr(tc.function, "name", "unknown") if hasattr(tc, "function") else "unknown",
+                            "arguments": getattr(tc.function, "arguments", "") if hasattr(tc, "function") else "",
+                        }
+                    except Exception:
+                        tc_data = {"raw": str(tc)}
+                    event = StreamEvent(
+                        timestamp=ts,
+                        event_type="tool_call",
+                        data=tc_data,
+                    )
+                    result.events.append(event)
+                    if on_event:
+                        on_event(event, result.final_answer)
+            except Exception:
+                pass
+
+            # citations — 引用元
+            try:
+                citations = list(chunk.citations) if hasattr(chunk, "citations") else []
+                if citations:
+                    event = StreamEvent(
+                        timestamp=ts,
+                        event_type="citations",
+                        data={"urls": citations},
+                    )
+                    result.events.append(event)
+                    if on_event:
+                        on_event(event, result.final_answer)
+            except Exception:
+                pass
+
+            # content — 最終回答テキスト
             if chunk.content:
                 if is_thinking:
                     is_thinking = False
                     finish_event = StreamEvent(
                         timestamp=ts,
                         event_type="thinking_done",
-                        data={"total_reasoning_tokens": last_reasoning_tokens},
+                        data={
+                            "total_reasoning_tokens": last_reasoning_tokens,
+                            "reasoning_text_length": len(accumulated_reasoning),
+                        },
                     )
                     result.events.append(finish_event)
                     if on_event:
@@ -91,6 +166,7 @@ def stream_completion(
                 if on_event:
                     on_event(event, result.final_answer)
 
+        # 最終 usage
         if response and response.usage:
             usage_data = {
                 "prompt_tokens": getattr(response.usage, "prompt_tokens", "unknown"),
@@ -107,6 +183,10 @@ def stream_completion(
             result.events.append(usage_event)
             if on_event:
                 on_event(usage_event, result.final_answer)
+
+        # reasoning_content 全文を result に保存
+        if accumulated_reasoning:
+            result.reasoning_content = accumulated_reasoning
 
     except Exception as e:
         error_msg = str(e)

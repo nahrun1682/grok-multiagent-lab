@@ -14,6 +14,7 @@ class StreamEvent:
 class SessionResult:
     events: list[StreamEvent] = field(default_factory=list)
     final_answer: str = ""
+    reasoning_content: str = ""
     usage: dict[str, Any] = field(default_factory=dict)
     error: str | None = None
     elapsed_seconds: float = 0.0
