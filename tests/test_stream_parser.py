@@ -2,8 +2,8 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from unittest.mock import MagicMock
-from app.stream_parser import parse_chunk, format_event_for_display, now_iso
+from app.stream_parser import format_event_for_display, now_iso
+from app.models import StreamEvent
 
 
 def test_now_iso_format():
@@ -12,63 +12,59 @@ def test_now_iso_format():
     assert ts.endswith("+00:00")
 
 
-def test_parse_chunk_content_delta():
-    chunk = MagicMock()
-    chunk.choices = [MagicMock()]
-    chunk.choices[0].delta.content = "Hello"
-    chunk.choices[0].delta.tool_calls = None
-    chunk.choices[0].finish_reason = None
-    chunk.usage = None
-    chunk.model_dump.return_value = {}
-
-    event = parse_chunk(chunk)
-    assert event.event_type == "content_delta"
-    assert event.data["content"] == "Hello"
-
-
-def test_parse_chunk_usage():
-    chunk = MagicMock()
-    chunk.choices = []
-    chunk.usage = MagicMock()
-    chunk.usage.prompt_tokens = 10
-    chunk.usage.completion_tokens = 20
-    chunk.usage.total_tokens = 30
-    chunk.model_dump.return_value = {}
-
-    event = parse_chunk(chunk)
-    assert event.event_type == "usage"
-    assert event.data["total_tokens"] == 30
-
-
-def test_parse_chunk_finish():
-    chunk = MagicMock()
-    chunk.choices = [MagicMock()]
-    chunk.choices[0].delta.content = None
-    chunk.choices[0].delta.tool_calls = None
-    chunk.choices[0].finish_reason = "stop"
-    chunk.usage = None
-    chunk.model_dump.return_value = {}
-
-    event = parse_chunk(chunk)
-    assert event.event_type == "finish_stop"
-
-
-def test_format_event_for_display():
-    from app.models import StreamEvent
+def test_format_event_content_delta():
     event = StreamEvent(
         timestamp="2026-01-01T00:00:00+00:00",
         event_type="content_delta",
-        data={"content": "test"},
+        data={"content": "Hello"},
     )
     output = format_event_for_display(event)
     assert "content_delta" in output
-    assert "test" in output
+    assert "Hello" in output
+
+
+def test_format_event_thinking():
+    event = StreamEvent(
+        timestamp="2026-01-01T00:00:00+00:00",
+        event_type="thinking",
+        data={"reasoning_tokens": 512},
+    )
+    output = format_event_for_display(event)
+    assert "thinking" in output
+    assert "512" in output
+
+
+def test_format_event_usage():
+    event = StreamEvent(
+        timestamp="2026-01-01T00:00:00+00:00",
+        event_type="usage",
+        data={
+            "prompt_tokens": 100,
+            "completion_tokens": 200,
+            "reasoning_tokens": 50,
+            "total_tokens": 350,
+        },
+    )
+    output = format_event_for_display(event)
+    assert "usage" in output
+    assert "350" in output
+
+
+def test_format_event_error():
+    event = StreamEvent(
+        timestamp="2026-01-01T00:00:00+00:00",
+        event_type="error",
+        data={"error": "API key missing"},
+    )
+    output = format_event_for_display(event)
+    assert "error" in output
+    assert "API key missing" in output
 
 
 if __name__ == "__main__":
     test_now_iso_format()
-    test_parse_chunk_content_delta()
-    test_parse_chunk_usage()
-    test_parse_chunk_finish()
-    test_format_event_for_display()
+    test_format_event_content_delta()
+    test_format_event_thinking()
+    test_format_event_usage()
+    test_format_event_error()
     print("All tests passed.")

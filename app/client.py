@@ -1,40 +1,16 @@
 import time
-from typing import Callable, Any
-from openai import OpenAI
-from app.config import XAI_API_KEY, BASE_URL, DEFAULT_MODEL
-from app.stream_parser import parse_chunk, now_iso
+from typing import Callable
+from xai_sdk import Client
+from xai_sdk.chat import user as xai_user
+from xai_sdk.tools import web_search as xai_web_search, x_search as xai_x_search
+from app.config import XAI_API_KEY, DEFAULT_MODEL
+from app.stream_parser import now_iso
 from app.models import SessionResult, StreamEvent
 
 
-TOOL_DEFINITIONS: dict[str, dict] = {
-    "web_search": {
-        "type": "function",
-        "function": {
-            "name": "web_search",
-            "description": "Search the web for current information",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string", "description": "Search query"}
-                },
-                "required": ["query"],
-            },
-        },
-    },
-    "x_search": {
-        "type": "function",
-        "function": {
-            "name": "x_search",
-            "description": "Search X (formerly Twitter) for posts and information",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string", "description": "Search query"}
-                },
-                "required": ["query"],
-            },
-        },
-    },
+AVAILABLE_TOOL_FACTORIES = {
+    "web_search": xai_web_search,
+    "x_search": xai_x_search,
 }
 
 
@@ -53,48 +29,96 @@ def stream_completion(
         ))
         return result
 
-    client = OpenAI(api_key=XAI_API_KEY, base_url=BASE_URL)
+    client = Client(api_key=XAI_API_KEY)
     result = SessionResult()
 
-    tools: list[dict] = [
-        TOOL_DEFINITIONS[t] for t in enabled_tools if t in TOOL_DEFINITIONS
+    tools = [
+        AVAILABLE_TOOL_FACTORIES[t]()
+        for t in enabled_tools
+        if t in AVAILABLE_TOOL_FACTORIES
     ]
 
-    kwargs: dict[str, Any] = {
-        "model": DEFAULT_MODEL,
-        "messages": [{"role": "user", "content": prompt}],
-        "stream": True,
-        "stream_options": {"include_usage": True},
-    }
+    chat_kwargs = dict(
+        model=DEFAULT_MODEL,
+        include=["verbose_streaming"],
+    )
     if tools:
-        kwargs["tools"] = tools
+        chat_kwargs["tools"] = tools
+
+    chat = client.chat.create(**chat_kwargs)
+    chat.append(xai_user(prompt))
 
     start = time.time()
+    is_thinking = True
+    last_reasoning_tokens = 0
 
     try:
-        stream = client.chat.completions.create(**kwargs)
-        for chunk in stream:
-            event = parse_chunk(chunk)
-            result.events.append(event)
+        for response, chunk in chat.stream():
+            ts = now_iso()
 
-            if event.event_type == "content_delta":
-                result.final_answer += event.data.get("content", "")
-            elif event.event_type == "usage":
-                result.usage = event.data
+            reasoning_tokens = getattr(response.usage, "reasoning_tokens", 0) or 0
 
+            if reasoning_tokens and reasoning_tokens != last_reasoning_tokens and is_thinking:
+                last_reasoning_tokens = reasoning_tokens
+                event = StreamEvent(
+                    timestamp=ts,
+                    event_type="thinking",
+                    data={"reasoning_tokens": reasoning_tokens},
+                )
+                result.events.append(event)
+                if on_event:
+                    on_event(event, result.final_answer)
+
+            if chunk.content:
+                if is_thinking:
+                    is_thinking = False
+                    finish_event = StreamEvent(
+                        timestamp=ts,
+                        event_type="thinking_done",
+                        data={"total_reasoning_tokens": last_reasoning_tokens},
+                    )
+                    result.events.append(finish_event)
+                    if on_event:
+                        on_event(finish_event, result.final_answer)
+
+                result.final_answer += chunk.content
+                event = StreamEvent(
+                    timestamp=ts,
+                    event_type="content_delta",
+                    data={"content": chunk.content},
+                )
+                result.events.append(event)
+                if on_event:
+                    on_event(event, result.final_answer)
+
+        if response and response.usage:
+            usage_data = {
+                "prompt_tokens": getattr(response.usage, "prompt_tokens", "unknown"),
+                "completion_tokens": getattr(response.usage, "completion_tokens", "unknown"),
+                "reasoning_tokens": getattr(response.usage, "reasoning_tokens", "unknown"),
+                "total_tokens": getattr(response.usage, "total_tokens", "unknown"),
+            }
+            result.usage = usage_data
+            usage_event = StreamEvent(
+                timestamp=now_iso(),
+                event_type="usage",
+                data=usage_data,
+            )
+            result.events.append(usage_event)
             if on_event:
-                on_event(event, result.final_answer)
+                on_event(usage_event, result.final_answer)
 
     except Exception as e:
         error_msg = str(e)
         result.error = error_msg
-        result.events.append(StreamEvent(
+        err_event = StreamEvent(
             timestamp=now_iso(),
             event_type="error",
             data={"error": error_msg},
-        ))
+        )
+        result.events.append(err_event)
         if on_event:
-            on_event(result.events[-1], result.final_answer)
+            on_event(err_event, result.final_answer)
 
     result.elapsed_seconds = time.time() - start
     return result

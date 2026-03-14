@@ -1,0 +1,18 @@
+{
+  "session_id": "20260313T235433",
+  "prompt": "今日のAIニュースを教えて",
+  "model": "grok-4.20-multi-agent-beta-0309",
+  "final_answer": "",
+  "usage": {},
+  "error": "Error code: 400 - Multi Agent requests are not allowed on chat completions",
+  "elapsed_seconds": 0.6280593872070312,
+  "events": [
+    {
+      "timestamp": "2026-03-13T23:54:33.314143+00:00",
+      "event_type": "error",
+      "data": {
+        "error": "Error code: 400 - Multi Agent requests are not allowed on chat completions"
+      }
+    }
+  ]
+}

@@ -51,7 +51,17 @@ st.markdown("""
     .event-usage    { border-left-color: #10b981; }
     .event-finish   { border-left-color: #8b5cf6; }
     .event-error    { border-left-color: #ef4444; }
+    .event-thinking { border-left-color: #a78bfa; }
     .event-unknown  { border-left-color: #6b7280; }
+    .thinking-card {
+        background: #faf5ff;
+        border: 1px solid #e9d5ff;
+        border-radius: 8px;
+        padding: 10px 16px;
+        margin-bottom: 10px;
+        color: #6d28d9;
+        font-size: 0.88rem;
+    }
     .usage-card {
         background: #f0fdf4;
         border: 1px solid #bbf7d0;
@@ -73,6 +83,8 @@ st.markdown("""
 
 
 def get_event_css_class(event_type: str) -> str:
+    if "thinking" in event_type:
+        return "event-thinking"
     if "content" in event_type:
         return "event-content"
     if "tool" in event_type:
@@ -215,25 +227,29 @@ if run_button:
 
         accumulated_answer = ""
         collected_events: list[StreamEvent] = []
-        log_lines: list[str] = []
 
-        answer_placeholder.markdown("_ストリーミング中..._")
-
-        with log_container.container():
-            log_display = st.empty()
+        answer_placeholder.markdown(
+            '<div class="thinking-card">🤔 マルチエージェント起動中...</div>',
+            unsafe_allow_html=True,
+        )
 
         def on_event(event: StreamEvent, current_answer: str) -> None:
             collected_events.append(event)
 
-            if event.event_type == "content_delta":
+            if event.event_type == "thinking":
+                rtok = event.data.get("reasoning_tokens", 0)
+                answer_placeholder.markdown(
+                    f'<div class="thinking-card">🧠 Thinking... ({rtok} reasoning tokens)</div>',
+                    unsafe_allow_html=True,
+                )
+            elif event.event_type == "thinking_done":
+                rtok = event.data.get("total_reasoning_tokens", 0)
+                answer_placeholder.markdown(
+                    f'<div class="thinking-card">✅ Thinking 完了 ({rtok} reasoning tokens) — 回答生成中...</div>',
+                    unsafe_allow_html=True,
+                )
+            elif event.event_type == "content_delta":
                 answer_placeholder.markdown(current_answer + "▌")
-
-            line = f"[{event.timestamp}] **{event.event_type}**"
-            if event.data:
-                for k, v in event.data.items():
-                    if k != "content":
-                        line += f"\n  - {k}: `{v}`"
-            log_lines.append(line)
 
         result = stream_completion(
             prompt=prompt.strip(),
